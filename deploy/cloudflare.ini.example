@@ -1,0 +1,4 @@
+# Cloudflare DNS challenge credentials for Certbot
+# Place at /root/.secrets/cloudflare.ini with chmod 600
+
+dns_cloudflare_api_token = YOUR_CLOUDFLARE_API_TOKEN_HERE

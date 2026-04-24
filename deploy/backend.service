@@ -1,0 +1,16 @@
+[Unit]
+Description=Nodestral Backend
+After=network.target
+
+[Service]
+Type=simple
+User=nodestral
+WorkingDirectory=/opt/nodestral/backend
+ExecStart=/opt/nodestral/backend/nodestral-backend
+EnvironmentFile=/opt/nodestral/backend/.env
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
