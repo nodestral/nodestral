@@ -1,77 +1,352 @@
-# Architecture — Community Edition
+# Nodestral — System Architecture
 
-## Components
+## 1. High-Level Architecture
 
 ```
-┌─────────────────────────────┐
-│    Dashboard (Next.js)      │
-│    :3000                    │
-└──────────────┬──────────────┘
-               │ HTTPS
-┌──────────────▼──────────────┐
-│    Backend (Go)             │
-│    :8080                    │
-│    ┌───────────────────┐    │
-│    │     SQLite        │    │
-│    │  users, nodes,    │    │
-│    │  metrics, disc.   │    │
-│    └───────────────────┘    │
-└──────┬──────────────────────┘
-       │
-       ▲ HTTPS (30s heartbeat)
-       │
-┌──────┴──────────────────────┐
-│    Agent (Go)               │
-│    - system info            │
-│    - discovery (5min)       │
-│    - metrics (30s)          │
-└─────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                     Nodestral Platform                      │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │                  Frontend (Next.js)                 │  │
+│  │  Dashboard · Server List · Terminal · Settings     │  │
+│  └───────────────────────┬────────────────────────────┘  │
+│                          │ HTTPS + WebSocket             │
+│  ┌───────────────────────▼────────────────────────────┐  │
+│  │                  API Server (Go)                    │  │
+│  │  Auth · Nodes · Heartbeat · Terminal Proxy         │  │
+│  │  OTel Config Generator · Billing · Webhooks        │  │
+│  └───┬──────────────────┬─────────────────────────┬───┘  │
+│      │                  │                         │       │
+│  ┌───▼──────┐  ┌───────▼──────┐  ┌──────────────▼───┐   │
+│  │PostgreSQL│  │ Redis (opt)  │  │   S3 / MinIO     │   │
+│  │ +Timescale│  │ Sessions,    │  │ Session replay,  │   │
+│  │          │  │ Pub/Sub,     │  │ Agent binaries,  │   │
+│  │          │  │ Rate limit   │  │ OTel Collector   │   │
+│  └──────────┘  └──────────────┘  └──────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+                         │
+                    HTTPS (30s heartbeat)
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│                   Node (Agent)                           │
+│                                                          │
+│  ┌──────────────┐  ┌──────────────────────────────────┐ │
+│  │  Nodestral Agent│  │     OTel Collector               │ │
+│  │  (Go binary) │  │  ┌──────────┐   ┌─────────────┐ │ │
+│  │              │──│  │ receivers │──▶│  exporters  │ │ │
+│  │ · Register  │  │  │ hostmetrics│  │ otlp/http   │ │ │
+│  │ · Heartbeat │  │  │ filelog   │  │ prometheus  │ │ │
+│  │ · SSH bridge│  │  │ prometheus│  │ loki        │ │ │
+│  │ · System    │  │  └──────────┘   └─────────────┘ │ │
+│  │   info      │  │                                  │ │
+│  │ · Collector │  └──────────────────────────────────┘ │
+│  │   manager   │                                       │
+│  └──────────────┘                                       │
+└─────────────────────────────────────────────────────────┘
+                         │
+              OTel Protocol (gRPC/HTTP)
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+   ┌────▼─────┐   ┌─────▼─────┐   ┌─────▼─────┐
+   │  Grafana  │   │Prometheus │   │ Datadog   │
+   │  Cloud    │   │ + Loki    │   │           │
+   │           │   │ + Tempo   │   │           │
+   └───────────┘   └───────────┘   └───────────┘
 ```
 
-## Backend
+## 2. Component Details
 
-Single Go binary with Gin HTTP framework. Uses SQLite for all storage (users, nodes, metrics, discovery data). No external database required.
+### 2.1 Agent (Go)
 
-### Endpoints
+**Binary name**: `nodestral-agent`
+**Target size**: <5MB
+**Dependencies**: None (static binary)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | /auth/register | Create account |
-| POST | /auth/login | Get JWT tokens |
-| POST | /auth/refresh | Refresh access token |
-| POST | /agent/register | Register new node |
-| POST | /agent/heartbeat | Node heartbeat (30s) |
-| POST | /agent/discovery | System discovery data |
-| GET | /nodes | List user's nodes |
-| GET | /nodes/:id | Node detail + metrics |
-| GET | /nodes/:id/metrics | Time-series metrics |
+**Responsibilities:**
+- System info collection (CPU, RAM, disk, network, OS, hostname, IPs)
+- Cloud provider auto-detection (metadata APIs: Tencent, AWS, GCP, Azure, Hetzner, DigitalOcean)
+- **Node auto-discovery** — detect installed services, packages, Docker containers, listening ports, firewall rules, SSL certs, pending updates, existing monitoring tools
+- Heartbeat to API every 30s (system metrics + status)
+- OTel Collector lifecycle management:
+  - Download OTel Collector binary from Nodestral CDN/S3
+  - Generate `otel-collector-config.yaml` based on user's backend choice
+  - Start/stop/restart as systemd service
+  - Update when config changes (pushed from API)
+- SSH bridge for web terminal:
+  - Accept WebSocket connections from API server
+  - Proxy to local `sshd` or direct PTY
+  - Session recording (optional, for audit)
 
-## Agent
+**Config file**: `/etc/nodestral/agent.yaml`
+```yaml
+api_url: https://api.nodestral.io
+node_id: <auto-generated on first register>
+auth_token: <provided by API on register>
+heartbeat_interval: 30s
+discovery_interval: 300s  # 5 minutes
+otel_collector:
+  managed: true  # Nodestral manages OTel Collector
+  version: latest
+```
 
-Go binary with no external dependencies. Detects OS, hardware, cloud provider, and runs periodic discovery scans.
+### 2.2 API Server (Go)
 
-### Discovery Items
+**Framework**: Gin or Fiber
+**Auth**: JWT (access + refresh tokens)
 
-- Running services and versions
-- Docker containers
-- Installed packages
-- Listening ports
-- SSL certificates (with expiry)
-- Firewall rules (UFW/iptables)
-- Pending OS updates
-- SSH users with login access
-- Cloud provider and region
-- Instance type (from metadata API)
+**Endpoints:**
 
-## Dashboard
+```
+# Auth
+POST   /auth/register          # Email + password
+POST   /auth/login
+POST   /auth/refresh
+POST   /auth/logout
 
-Next.js app with dark/light theme. Connects to backend via `NEXT_PUBLIC_API_URL`.
+# Nodes
+GET    /nodes                  # List user's nodes
+GET    /nodes/:id              # Node detail + latest metrics
+POST   /nodes                  # Manual register (alternative to agent auto-register)
+PATCH  /nodes/:id              # Update tags, group, name
+DELETE /nodes/:id              # Remove node
 
-### Pages
+# Heartbeat (called by agent)
+POST   /agent/heartbeat        # Agent pushes metrics + status
+POST   /agent/register         # First-time agent registration
+GET    /agent/config           # Agent fetches config (OTel config, settings)
+POST   /agent/collector-status # Agent reports OTel Collector health
 
-- Login / Register
-- Node list (online/offline status)
-- Node detail (metrics charts, discovery data)
-- Node grouping
-- Notifications
-- Cost tracking
+# Terminal
+GET    /terminal/ws/:node_id   # WebSocket endpoint for web terminal
+
+# Backend Configuration (OTel export targets)
+GET    /backends               # List configured backends
+POST   /backends               # Add backend (Grafana Cloud, Prometheus, etc.)
+PUT    /backends/:id           # Update backend config
+DELETE /backends/:id
+POST   /backends/:id/apply     # Push config to all/selected nodes
+
+# Bulk Operations
+POST   /operations/execute     # Run command on selected nodes
+GET    /operations/:id         # Check operation status/results
+
+# Metrics (for built-in dashboard)
+GET    /metrics/:node_id       # Time-series data (CPU, RAM, disk)
+GET    /metrics/:node_id/now   # Latest metric point
+
+# Discovery
+GET    /nodes/:id/discovery    # Latest discovery snapshot
+POST   /agent/discovery        # Agent pushes discovery data
+```
+
+### 2.3 Node Auto-Discovery
+
+On first registration and periodically (every 5 min), the agent scans the node and reports:
+
+**Detection Methods:**
+
+| Category | Method | Data Collected |
+|----------|--------|----------------|
+| System services | `systemctl list-units --type=service` | Service name, status (running/stopped), version |
+| Docker | Docker socket (`docker ps`, `docker inspect`) | Containers, images, compose projects, resource usage |
+| Installed packages | `dpkg -l` / `rpm -qa` (filtered whitelist) | Notable packages: nginx, postgresql, redis, nodejs, go, python, certbot, etc. |
+| Runtime versions | Binary probing (`nginx -v`, `node --version`, etc.) | Exact versions for key services |
+| Listening ports | `/proc/net/tcp`, `/proc/net/tcp6` | Open ports + owning process |
+| SSL certificates | Find `.pem/.crt` files + `openssl x509` | Domain, issuer, expiry date |
+| Firewall | `ufw status` / `iptables -L` | Active rules, allowed ports |
+| OS updates | `apt list --upgradable` | Pending updates count, critical count |
+| SSH access | Parse `/etc/passwd` + `.ssh/authorized_keys` | Users with login capability |
+| Existing monitoring | Check for node_exporter, Netdata, Datadog agent, Grafana agent | What monitoring is already installed |
+
+**Discovery payload (reported to API):**
+```json
+{
+  "node_id": "abc123",
+  "services": [
+    {"name": "nginx", "status": "running", "version": "1.25.5"},
+    {"name": "postgresql", "status": "running", "version": "16.2"},
+    {"name": "docker", "status": "running", "version": "27.4.0"}
+  ],
+  "packages": [
+    {"name": "nodejs", "version": "22.1.0"},
+    {"name": "golang", "version": "1.26.2"},
+    {"name": "python3", "version": "3.13.0"},
+    {"name": "certbot", "version": "2.11.0"}
+  ],
+  "docker_containers": [
+    {"name": "web-app", "image": "myapp:latest", "status": "running", "cpu_pct": 15},
+    {"name": "redis-cache", "image": "redis:7-alpine", "status": "running", "cpu_pct": 2}
+  ],
+  "listening_ports": [
+    {"port": 22, "process": "sshd"},
+    {"port": 80, "process": "nginx"},
+    {"port": 443, "process": "nginx"},
+    {"port": 5432, "process": "postgres"}
+  ],
+  "certificates": [
+    {"domain": "*.example.com", "issuer": "Let's Encrypt", "expires_at": "2026-06-01T00:00:00Z"}
+  ],
+  "firewall": {"type": "ufw", "status": "active", "rules": 3},
+  "updates": {"pending": 12, "critical": 3},
+  "ssh_users": ["root", "ubuntu", "deploy"],
+  "monitoring_tools": ["node_exporter", "netdata"]
+}
+```
+
+**Dashboard shows:**
+- Service inventory with status badges (● running, ○ stopped, ⚠️ update available)
+- Docker container list with resource usage
+- Port map showing what's exposed
+- Certificate expiry timeline
+- Update count badges (critical = red)
+- Detected monitoring tools ("This node has node_exporter + Netdata")
+
+### 2.4 Database (PostgreSQL + TimescaleDB)
+
+**Tables:**
+
+```sql
+-- Users
+users (id, email, password_hash, plan, created_at, updated_at)
+
+-- Nodes
+nodes (id, user_id, name, hostname, group, tags, 
+       os, arch, cpu_cores, ram_mb, disk_gb,
+       provider, region, public_ip, private_ip,
+       status, last_heartbeat, 
+       created_at)
+
+-- Node discovery (services, packages, containers, etc.)
+node_discovery (node_id, discovered_at,
+                services_json,      -- [{name, status, version}]
+                packages_json,      -- [{name, version}]
+                containers_json,    -- [{name, image, status, cpu_pct}]
+                ports_json,         -- [{port, process}]
+                certs_json,         -- [{domain, issuer, expires_at}]
+                firewall_json,      -- {type, status, rules}
+                updates_json,       -- {pending, critical}
+                ssh_users_json,     -- ["root", "ubuntu"]
+                monitoring_json)    -- ["node_exporter", "netdata"]
+
+-- Heartbeat metrics (TimescaleDB hypertable)
+node_metrics (time, node_id, cpu_percent, ram_percent, 
+              ram_used_mb, disk_percent, disk_used_gb,
+              net_rx_bytes, net_tx_bytes, load_1m, load_5m)
+
+-- Backend configs (OTel export targets)
+backends (id, user_id, name, type,  -- grafana-cloud, prometheus, datadog, etc.
+          endpoint, auth_config_encrypted, is_default,
+          created_at)
+
+-- Operations (bulk commands)
+operations (id, user_id, status, command, node_ids, 
+            results_json, created_at, completed_at)
+
+-- Audit logs (terminal sessions, actions)
+audit_logs (id, user_id, node_id, action, metadata_json, created_at)
+
+-- OTel Collector configs per node
+node_collector_configs (node_id, backend_id, config_yaml, applied_at)
+```
+
+### 2.4 Frontend (Next.js + Tailwind)
+
+**Pages:**
+- `/` — Landing page
+- `/dashboard` — Server list with status overview
+- `/dashboard/nodes/:id` — Node detail (specs, metrics, terminal)
+- `/dashboard/backends` — Manage OTel export targets
+- `/dashboard/operations` — Bulk operations history
+- `/dashboard/settings` — Account, API keys, team management
+
+**Key UI Components:**
+- `NodeCard` — Status dot, provider badge, mini sparkline, quick actions
+- `MetricsChart` — CPU/RAM/Disk time-series (Recharts)
+- `Terminal` — xterm.js with WebSocket connection
+- `BackendForm` — Configure Grafana Cloud / Prometheus / Datadog endpoints
+- `BulkOpsModal` — Select nodes, enter command, see results
+
+### 2.5 OTel Collector Config Generator
+
+The API generates OTel Collector configs dynamically:
+
+```yaml
+# Example: Grafana Cloud backend
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      memory: {}
+      disk: {}
+      filesystem: {}
+      network: {}
+      load: {}
+  filelog:
+    include: [/var/log/*.log, /var/log/syslog, /var/log/journal/*]
+    start_at: end
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  resourcedetection:
+    detectors: [system, ec2, gcp, azure]
+    timeout: 10s
+
+exporters:
+  otlphttp:
+    endpoint: https://otlp-gateway-prod-us-central-0.grafana.net/otlp
+    headers:
+      authorization: Basic <base64(user:token)>
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [batch, resourcedetection]
+      exporters: [otlphttp]
+    logs:
+      receivers: [filelog]
+      processors: [batch]
+      exporters: [otlphttp]
+```
+
+## 3. Security Model
+
+- Agent ↔ API: mTLS or JWT token auth
+- User ↔ API: JWT with refresh tokens
+- Web terminal: JWT + per-session token, encrypted WebSocket (wss://)
+- Backend credentials: AES-256 encrypted at rest, only decrypted when generating collector config
+- No direct SSH exposure — all terminal traffic proxied through API
+- Agent runs as unprivileged user by default, `nodestral` systemd service
+
+## 4. Deployment
+
+**MVP (single server):**
+- Docker Compose: API + PostgreSQL + Redis + MinIO
+- Nginx reverse proxy + Let's Encrypt
+- Agent binary served from S3/MinIO
+
+**Scale:**
+- API: horizontal behind load balancer
+- DB: PostgreSQL primary + read replicas
+- Redis: cluster mode
+- WebSocket: sticky sessions or Redis pub/sub for multi-instance
+- Agent CDN: CloudFront/CF for binary distribution
+
+## 5. Tech Stack Summary
+
+| Component | Technology | Why |
+|-----------|-----------|-----|
+| Agent | Go | Single binary, cross-compile, low resource, your strongest language |
+| API | Go (Gin/Fiber) | Same language as agent, fast, low memory |
+| Frontend | Next.js 14 + Tailwind | You know it, fast to ship, SSR for landing page |
+| Charts | Recharts | Lightweight, React-native, no D3 complexity |
+| Terminal | xterm.js | Standard, battle-tested |
+| Database | PostgreSQL + TimescaleDB | Time-series metrics + relational data in one DB |
+| Cache | Redis | Sessions, rate limiting, pub/sub for WebSocket scaling |
+| Storage | MinIO | Agent binaries, OTel Collector downloads, session recordings |
+| OTel | Official Collector | CNCF project, 50+ receivers, every backend supported |
+| Deploy | Docker Compose (MVP), K8s (later) | Start simple, scale later |
