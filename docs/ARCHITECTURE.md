@@ -1,50 +1,49 @@
 # Nodestral — System Architecture
 
+> Last updated: 2026-05-06
+
 ## 1. High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Nodestral Platform                      │
+┌──────────────────────────────────────────────────────────┐
+│                    Nodestral Platform                     │
 │                                                          │
 │  ┌────────────────────────────────────────────────────┐  │
-│  │                  Frontend (Next.js)                 │  │
-│  │  Dashboard · Server List · Terminal · Settings     │  │
+│  │              Frontend (Next.js 15)                 │  │
+│  │  Dashboard · Nodes · Metrics · Terminal · Settings │  │
 │  └───────────────────────┬────────────────────────────┘  │
 │                          │ HTTPS + WebSocket             │
 │  ┌───────────────────────▼────────────────────────────┐  │
-│  │                  API Server (Go)                    │  │
-│  │  Auth · Nodes · Heartbeat · Terminal Proxy         │  │
-│  │  OTel Config Generator · Billing · Webhooks        │  │
-│  └───┬──────────────────┬─────────────────────────┬───┘  │
-│      │                  │                         │       │
-│  ┌───▼──────┐  ┌───────▼──────┐  ┌──────────────▼───┐   │
-│  │PostgreSQL│  │ Redis (opt)  │  │   S3 / MinIO     │   │
-│  │ +Timescale│  │ Sessions,    │  │ Session replay,  │   │
-│  │          │  │ Pub/Sub,     │  │ Agent binaries,  │   │
-│  │          │  │ Rate limit   │  │ OTel Collector   │   │
-│  └──────────┘  └──────────────┘  └──────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+│  │              API Server (Go + Gin)                  │  │
+│  │  Auth · Nodes · Heartbeat · Discovery              │  │
+│  │  Notifications · Operations · Backends · Admin     │  │
+│  └───┬──────────────┬──────────────┬─────────────────┘  │
+│      │              │              │                     │
+│  ┌───▼──────┐  ┌───▼────────┐  ┌─▼──────────────────┐  │
+│  │ Supabase │  │ TimescaleDB│  │     Redis          │  │
+│  │PostgreSQL│  │ (metrics)  │  │  Pub/Sub, cache    │  │
+│  │          │  │ 30-day ret │  │                    │  │
+│  └──────────┘  └────────────┘  └────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
                          │
                     HTTPS (30s heartbeat)
                          │
 ┌────────────────────────▼────────────────────────────────┐
 │                   Node (Agent)                           │
 │                                                          │
-│  ┌──────────────┐  ┌──────────────────────────────────┐ │
-│  │  Nodestral Agent│  │     OTel Collector               │ │
-│  │  (Go binary) │  │  ┌──────────┐   ┌─────────────┐ │ │
-│  │              │──│  │ receivers │──▶│  exporters  │ │ │
-│  │ · Register  │  │  │ hostmetrics│  │ otlp/http   │ │ │
-│  │ · Heartbeat │  │  │ filelog   │  │ prometheus  │ │ │
-│  │ · SSH bridge│  │  │ prometheus│  │ loki        │ │ │
-│  │ · System    │  │  └──────────┘   └─────────────┘ │ │
-│  │   info      │  │                                  │ │
-│  │ · Collector │  └──────────────────────────────────┘ │
-│  │   manager   │                                       │
-│  └──────────────┘                                       │
-└─────────────────────────────────────────────────────────┘
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  Nodestral Agent (Go, static binary, ~17MB)      │   │
+│  │                                                   │   │
+│  │  · Register + auth token                         │   │
+│  │  · Heartbeat (CPU, RAM, disk, network)           │   │
+│  │  · Discovery (services, ports, packages, SSH)    │   │
+│  │  · Elevated discovery (containers, certs, fw)    │   │
+│  │  · Terminal (reverse WS, in agent-full only)     │   │
+│  │  · Prometheus remote write exporter (Pro)        │   │
+│  └──────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────┘
                          │
-              OTel Protocol (gRPC/HTTP)
+              Prometheus remote write (Pro)
                          │
         ┌────────────────┼────────────────┐
         │                │                │
@@ -59,294 +58,343 @@
 
 ### 2.1 Agent (Go)
 
-**Binary name**: `nodestral-agent`
-**Target size**: <5MB
-**Dependencies**: None (static binary)
+**Binary name:** `nodestral-agent`
+**Binary size:** ~17MB (static, CGO_ENABLED=0)
+**Platforms:** linux/darwin × amd64/arm64
+**Dependencies:** None (static binary)
 
 **Responsibilities:**
 - System info collection (CPU, RAM, disk, network, OS, hostname, IPs)
 - Cloud provider auto-detection (metadata APIs: Tencent, AWS, GCP, Azure, Hetzner, DigitalOcean)
-- **Node auto-discovery** — detect installed services, packages, Docker containers, listening ports, firewall rules, SSL certs, pending updates, existing monitoring tools
+- Instance type detection from cloud metadata
 - Heartbeat to API every 30s (system metrics + status)
-- OTel Collector lifecycle management:
-  - Download OTel Collector binary from Nodestral CDN/S3
-  - Generate `otel-collector-config.yaml` based on user's backend choice
-  - Start/stop/restart as systemd service
-  - Update when config changes (pushed from API)
-- SSH bridge for web terminal:
-  - Accept WebSocket connections from API server
-  - Proxy to local `sshd` or direct PTY
-  - Session recording (optional, for audit)
+- Node auto-discovery:
+  - Basic (unprivileged): services, listening ports, packages, SSH users
+  - Elevated (opt-in, consent-based): Docker containers, SSL certs, firewall rules, pending security updates
+- Prometheus remote write exporter (Pro only — polls API for backend config)
+- Config file at `/etc/nodestral/agent.yaml`
 
-**Config file**: `/etc/nodestral/agent.yaml`
+**Note:** The public `nodestral/agent` repo has no terminal code. The private `nodestral/agent-full` repo includes persistent shell terminal (reverse WebSocket to nx relay).
+
 ```yaml
-api_url: https://api.nodestral.io
+# /etc/nodestral/agent.yaml
+api_url: https://api.nodestral.web.id
 node_id: <auto-generated on first register>
 auth_token: <provided by API on register>
 heartbeat_interval: 30s
-discovery_interval: 300s  # 5 minutes
-otel_collector:
-  managed: true  # Nodestral manages OTel Collector
-  version: latest
+discovery_interval: 300s
 ```
 
 ### 2.2 API Server (Go)
 
-**Framework**: Gin or Fiber
-**Auth**: JWT (access + refresh tokens)
+**Framework:** Gin + sqlx
+**Database:** Supabase PostgreSQL 17 + TimescaleDB 2.26
+**Auth:** JWT (access + refresh tokens)
+**Cache:** Redis 7.0 (localhost-only, pub/sub)
 
 **Endpoints:**
 
 ```
 # Auth
-POST   /auth/register          # Email + password
-POST   /auth/login
-POST   /auth/refresh
-POST   /auth/logout
+POST   /auth/register          # Create account
+POST   /auth/login             # Get token pair
+POST   /auth/refresh           # Refresh access token
+POST   /auth/password          # Change password (authenticated)
+GET    /auth/validate          # Validate JWT (for relay)
 
-# Nodes
+# Agent (pre-authenticated or token-based)
+POST   /agent/register         # Register node (returns node_id + auth_token)
+POST   /agent/register/token   # Register with install token
+POST   /agent/heartbeat        # Push metrics (returns node_exporter_action)
+POST   /agent/discovery        # Push discovery data
+GET    /agent/exporter-config  # Get Prometheus backend config (Pro only)
+POST   /agent/validate         # Validate agent token (for relay)
+
+# Nodes (user-authenticated)
 GET    /nodes                  # List user's nodes
-GET    /nodes/:id              # Node detail + latest metrics
-POST   /nodes                  # Manual register (alternative to agent auto-register)
-PATCH  /nodes/:id              # Update tags, group, name
+GET    /nodes/groups           # List groups
+PUT    /nodes/groups/rename    # Rename group
+DELETE /nodes/groups/:name     # Delete group
+GET    /nodes/unclaimed        # List unclaimed nodes
+POST   /nodes/:id/claim        # Claim a node
+GET    /nodes/:id              # Node detail
+GET    /nodes/:id/metrics      # Time-series metrics
+GET    /nodes/:id/discovery    # Discovery snapshot
+GET    /nodes/costs            # Cost data
+PATCH  /nodes/:id              # Update name, group, tags
 DELETE /nodes/:id              # Remove node
+GET    /nodes/:id/ownership    # Verify ownership (for relay)
 
-# Heartbeat (called by agent)
-POST   /agent/heartbeat        # Agent pushes metrics + status
-POST   /agent/register         # First-time agent registration
-GET    /agent/config           # Agent fetches config (OTel config, settings)
-POST   /agent/collector-status # Agent reports OTel Collector health
+# Node Exporter (Pro only)
+POST   /nodes/:id/node-exporter/install
+POST   /nodes/:id/node-exporter/uninstall
+GET    /nodes/:id/node-exporter/status
 
-# Terminal
-GET    /terminal/ws/:node_id   # WebSocket endpoint for web terminal
+# Install Tokens
+POST   /install-tokens         # Create token
+GET    /install-tokens         # List tokens
+DELETE /install-tokens/:id     # Revoke token
 
-# Backend Configuration (OTel export targets)
-GET    /backends               # List configured backends
-POST   /backends               # Add backend (Grafana Cloud, Prometheus, etc.)
-PUT    /backends/:id           # Update backend config
-DELETE /backends/:id
-POST   /backends/:id/apply     # Push config to all/selected nodes
+# Backends (Pro only)
+GET    /backends               # List telemetry backends
+POST   /backends               # Create backend
+PUT    /backends/:id           # Update backend
+DELETE /backends/:id           # Delete backend
+POST   /backends/:id/test      # Test connection
+POST   /backends/:id/default   # Set as default
 
-# Bulk Operations
-POST   /operations/execute     # Run command on selected nodes
-GET    /operations/:id         # Check operation status/results
+# Notifications
+GET    /notifications          # List (with unread count)
+POST   /notifications/:id/read # Mark read
+POST   /notifications/read-all # Mark all read
+POST   /notifications/:id/dismiss
 
-# Metrics (for built-in dashboard)
-GET    /metrics/:node_id       # Time-series data (CPU, RAM, disk)
-GET    /metrics/:node_id/now   # Latest metric point
+# Operations
+POST   /operations/execute     # Bulk command execution
+GET    /operations             # List operations
+GET    /operations/:id         # Get operation status/results
 
-# Discovery
-GET    /nodes/:id/discovery    # Latest discovery snapshot
-POST   /agent/discovery        # Agent pushes discovery data
+# Admin (separate JWT secret)
+POST   /admin/login            # Admin login
+GET    /admin/users            # List users (search, pagination)
+PATCH  /admin/users/:id/status # Update user status
+GET    /admin/nodes/summary    # Node overview (total, online/offline)
+GET    /admin/health           # System health (API, DB, Redis, Relay)
+GET    /admin/billing          # MRR, plan distribution
+GET    /admin/audit-logs       # Audit logs (filterable)
 ```
 
 ### 2.3 Node Auto-Discovery
 
-On first registration and periodically (every 5 min), the agent scans the node and reports:
+On registration and periodically (every 5 min), the agent scans the node:
 
-**Detection Methods:**
+| Category | Method | Data |
+|----------|--------|------|
+| System services | `systemctl list-units --type=service` | Name, status, version |
+| Docker | Docker socket (`docker ps`, `docker inspect`) | Containers, images, resource usage |
+| Packages | `dpkg -l` / `rpm -qa` (filtered whitelist) | Notable packages |
+| Ports | `/proc/net/tcp`, `/proc/net/tcp6` | Open ports + owning process |
+| SSL certs | Find `.pem/.crt` + `openssl x509` | Domain, issuer, expiry |
+| Firewall | `ufw status` / `iptables -L` | Active rules |
+| OS updates | `apt list --upgradable` | Pending count, critical count |
+| SSH users | Parse `/etc/passwd` + `.ssh/authorized_keys` | Users with login |
+| Monitoring | Check for node_exporter, Netdata, Datadog, Grafana agent | What's installed |
 
-| Category | Method | Data Collected |
-|----------|--------|----------------|
-| System services | `systemctl list-units --type=service` | Service name, status (running/stopped), version |
-| Docker | Docker socket (`docker ps`, `docker inspect`) | Containers, images, compose projects, resource usage |
-| Installed packages | `dpkg -l` / `rpm -qa` (filtered whitelist) | Notable packages: nginx, postgresql, redis, nodejs, go, python, certbot, etc. |
-| Runtime versions | Binary probing (`nginx -v`, `node --version`, etc.) | Exact versions for key services |
-| Listening ports | `/proc/net/tcp`, `/proc/net/tcp6` | Open ports + owning process |
-| SSL certificates | Find `.pem/.crt` files + `openssl x509` | Domain, issuer, expiry date |
-| Firewall | `ufw status` / `iptables -L` | Active rules, allowed ports |
-| OS updates | `apt list --upgradable` | Pending updates count, critical count |
-| SSH access | Parse `/etc/passwd` + `.ssh/authorized_keys` | Users with login capability |
-| Existing monitoring | Check for node_exporter, Netdata, Datadog agent, Grafana agent | What monitoring is already installed |
+**tryCmd pattern:** Commands try without sudo first, retry once with sudo, graceful fallback on failure. No sudoers file required.
 
-**Discovery payload (reported to API):**
-```json
-{
-  "node_id": "abc123",
-  "services": [
-    {"name": "nginx", "status": "running", "version": "1.25.5"},
-    {"name": "postgresql", "status": "running", "version": "16.2"},
-    {"name": "docker", "status": "running", "version": "27.4.0"}
-  ],
-  "packages": [
-    {"name": "nodejs", "version": "22.1.0"},
-    {"name": "golang", "version": "1.26.2"},
-    {"name": "python3", "version": "3.13.0"},
-    {"name": "certbot", "version": "2.11.0"}
-  ],
-  "docker_containers": [
-    {"name": "web-app", "image": "myapp:latest", "status": "running", "cpu_pct": 15},
-    {"name": "redis-cache", "image": "redis:7-alpine", "status": "running", "cpu_pct": 2}
-  ],
-  "listening_ports": [
-    {"port": 22, "process": "sshd"},
-    {"port": 80, "process": "nginx"},
-    {"port": 443, "process": "nginx"},
-    {"port": 5432, "process": "postgres"}
-  ],
-  "certificates": [
-    {"domain": "*.example.com", "issuer": "Let's Encrypt", "expires_at": "2026-06-01T00:00:00Z"}
-  ],
-  "firewall": {"type": "ufw", "status": "active", "rules": 3},
-  "updates": {"pending": 12, "critical": 3},
-  "ssh_users": ["root", "ubuntu", "deploy"],
-  "monitoring_tools": ["node_exporter", "netdata"]
-}
-```
+### 2.4 Database Schema
 
-**Dashboard shows:**
-- Service inventory with status badges (● running, ○ stopped, ⚠️ update available)
-- Docker container list with resource usage
-- Port map showing what's exposed
-- Certificate expiry timeline
-- Update count badges (critical = red)
-- Detected monitoring tools ("This node has node_exporter + Netdata")
-
-### 2.4 Database (PostgreSQL + TimescaleDB)
-
-**Tables:**
+**Supabase PostgreSQL (users, nodes, discovery):**
 
 ```sql
--- Users
-users (id, email, password_hash, plan, created_at, updated_at)
+users (
+  id UUID PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  plan TEXT DEFAULT 'free',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+)
 
--- Nodes
-nodes (id, user_id, name, hostname, group, tags, 
-       os, arch, cpu_cores, ram_mb, disk_gb,
-       provider, region, public_ip, private_ip,
-       status, last_heartbeat, 
-       created_at)
+nodes (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  auth_token TEXT UNIQUE NOT NULL,
+  name TEXT,
+  hostname TEXT NOT NULL,
+  group_name TEXT DEFAULT 'default',
+  tags JSONB DEFAULT '[]',
+  os TEXT, kernel TEXT, arch TEXT,
+  cpu_cores INT, ram_mb BIGINT, disk_gb BIGINT,
+  provider TEXT, region TEXT, instance_type TEXT,
+  monthly_cost NUMERIC,
+  public_ip TEXT, private_ip TEXT,
+  status TEXT DEFAULT 'offline',
+  last_heartbeat TIMESTAMPTZ,
+  node_exporter_requested TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+)
 
--- Node discovery (services, packages, containers, etc.)
-node_discovery (node_id, discovered_at,
-                services_json,      -- [{name, status, version}]
-                packages_json,      -- [{name, version}]
-                containers_json,    -- [{name, image, status, cpu_pct}]
-                ports_json,         -- [{port, process}]
-                certs_json,         -- [{domain, issuer, expires_at}]
-                firewall_json,      -- {type, status, rules}
-                updates_json,       -- {pending, critical}
-                ssh_users_json,     -- ["root", "ubuntu"]
-                monitoring_json)    -- ["node_exporter", "netdata"]
+node_discovery (
+  id UUID PRIMARY KEY,
+  node_id UUID REFERENCES nodes(id),
+  discovered_at TIMESTAMPTZ DEFAULT NOW(),
+  services JSONB, packages JSONB, containers JSONB,
+  ports JSONB, certificates JSONB, firewall JSONB,
+  updates JSONB, ssh_users JSONB, monitoring_tools JSONB
+)
 
--- Heartbeat metrics (TimescaleDB hypertable)
-node_metrics (time, node_id, cpu_percent, ram_percent, 
-              ram_used_mb, disk_percent, disk_used_gb,
-              net_rx_bytes, net_tx_bytes, load_1m, load_5m)
+backends (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,  -- grafana-cloud, prometheus, loki, datadog, otlp
+  endpoint TEXT NOT NULL,
+  auth_config TEXT,  -- AES-GCM encrypted
+  is_default BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+)
 
--- Backend configs (OTel export targets)
-backends (id, user_id, name, type,  -- grafana-cloud, prometheus, datadog, etc.
-          endpoint, auth_config_encrypted, is_default,
-          created_at)
+operations (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  status TEXT DEFAULT 'pending',
+  command TEXT NOT NULL,
+  node_ids JSONB NOT NULL,
+  results JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+)
 
--- Operations (bulk commands)
-operations (id, user_id, status, command, node_ids, 
-            results_json, created_at, completed_at)
+install_tokens (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  token TEXT UNIQUE NOT NULL,
+  max_uses INT DEFAULT 2,
+  uses INT DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+)
 
--- Audit logs (terminal sessions, actions)
-audit_logs (id, user_id, node_id, action, metadata_json, created_at)
+audit_logs (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  node_id UUID,
+  action TEXT NOT NULL,
+  metadata TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+)
 
--- OTel Collector configs per node
-node_collector_configs (node_id, backend_id, config_yaml, applied_at)
+notifications (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  node_id UUID,
+  type TEXT NOT NULL,
+  severity TEXT DEFAULT 'info',
+  title TEXT NOT NULL,
+  message TEXT,
+  read BOOLEAN DEFAULT FALSE,
+  dismissed BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ
+)
 ```
 
-### 2.4 Frontend (Next.js + Tailwind)
+**TimescaleDB (metrics hypertable):**
+
+```sql
+node_metrics (
+  time TIMESTAMPTZ NOT NULL,
+  node_id UUID NOT NULL,
+  cpu_percent DOUBLE PRECISION,
+  ram_percent DOUBLE PRECISION,
+  ram_used_mb BIGINT,
+  disk_percent DOUBLE PRECISION,
+  disk_used_gb DOUBLE PRECISION,
+  net_rx_bytes BIGINT,
+  net_tx_bytes BIGINT,
+  load_1m DOUBLE PRECISION,
+  load_5m DOUBLE PRECISION
+)
+-- Converted to hypertable, 30-day retention policy
+```
+
+### 2.5 Frontend (Next.js 15)
+
+**Framework:** Next.js 15 (App Router, standalone output)
+**Styling:** Tailwind CSS with CSS variables for dark/light theming
+**Charts:** Recharts
 
 **Pages:**
-- `/` — Landing page
-- `/dashboard` — Server list with status overview
-- `/dashboard/nodes/:id` — Node detail (specs, metrics, terminal)
-- `/dashboard/backends` — Manage OTel export targets
-- `/dashboard/operations` — Bulk operations history
-- `/dashboard/settings` — Account, API keys, team management
 
-**Key UI Components:**
-- `NodeCard` — Status dot, provider badge, mini sparkline, quick actions
-- `MetricsChart` — CPU/RAM/Disk time-series (Recharts)
-- `Terminal` — xterm.js with WebSocket connection
-- `BackendForm` — Configure Grafana Cloud / Prometheus / Datadog endpoints
-- `BulkOpsModal` — Select nodes, enter command, see results
+| Route | Description |
+|-------|-------------|
+| `/` | Landing page (pricing, features, install CTA) |
+| `/auth/login`, `/auth/register` | Auth flow |
+| `/install` | Agent install instructions |
+| `/dashboard` | Node list with search/filter, status tabs |
+| `/dashboard/nodes/:id` | Node detail (specs, metrics, discovery, terminal) |
+| `/dashboard/backends` | Telemetry backend config (Pro, gated) |
+| `/dashboard/operations` | Bulk command execution |
+| `/dashboard/notifications` | Notifications |
+| `/dashboard/costs` | Cost tracking |
+| `/dashboard/settings` | Account settings, change password |
+| `management.nodestral.web.id/` | Admin dashboard |
+| `management.nodestral.web.id/dashboard/users` | User management |
+| `management.nodestral.web.id/dashboard/nodes` | Node overview |
+| `management.nodestral.web.id/dashboard/health` | System health |
+| `management.nodestral.web.id/dashboard/billing` | Revenue tracking |
+| `management.nodestral.web.id/dashboard/audit-logs` | Audit logs |
 
-### 2.5 OTel Collector Config Generator
+### 2.6 WebSocket Relay (nx)
 
-The API generates OTel Collector configs dynamically:
+**Binary:** `nodestral-relay` (Go + Gorilla WebSocket)
+**Port:** 8090
 
-```yaml
-# Example: Grafana Cloud backend
-receivers:
-  hostmetrics:
-    collection_interval: 30s
-    scrapers:
-      cpu: {}
-      memory: {}
-      disk: {}
-      filesystem: {}
-      network: {}
-      load: {}
-  filelog:
-    include: [/var/log/*.log, /var/log/syslog, /var/log/journal/*]
-    start_at: end
+Bridges browser ↔ agent for two use cases:
 
-processors:
-  batch:
-    timeout: 5s
-    send_batch_size: 1024
-  resourcedetection:
-    detectors: [system, ec2, gcp, azure]
-    timeout: 10s
+1. **Live metrics:** Redis pub/sub → relay → browser WebSocket
+2. **Terminal:** Browser → relay → agent (reverse WebSocket)
 
-exporters:
-  otlphttp:
-    endpoint: https://otlp-gateway-prod-us-central-0.grafana.net/otlp
-    headers:
-      authorization: Basic <base64(user:token)>
+**Connection flow:**
+1. Agent connects to `wss://nx.nodestral.web.id/ws` (reverse WS)
+2. Browser connects to `wss://nx.nodestral.web.id/terminal/:nodeId`
+3. Relay validates both sides via API (JWT for browser, agent token for node)
+4. Bidirectional data flow
 
-service:
-  pipelines:
-    metrics:
-      receivers: [hostmetrics]
-      processors: [batch, resourcedetection]
-      exporters: [otlphttp]
-    logs:
-      receivers: [filelog]
-      processors: [batch]
-      exporters: [otlphttp]
-```
+**Limits:** 5 connections per node, 20 per user.
 
 ## 3. Security Model
 
-- Agent ↔ API: mTLS or JWT token auth
-- User ↔ API: JWT with refresh tokens
-- Web terminal: JWT + per-session token, encrypted WebSocket (wss://)
-- Backend credentials: AES-256 encrypted at rest, only decrypted when generating collector config
-- No direct SSH exposure — all terminal traffic proxied through API
-- Agent runs as unprivileged user by default, `nodestral` systemd service
+- **Agent ↔ API:** Agent token (issued on registration)
+- **User ↔ API:** JWT with 1h access + 7d refresh tokens
+- **Admin ↔ API:** Separate JWT secret, isolated auth
+- **Backend credentials:** AES-GCM encrypted at rest (crypto middleware)
+- **Terminal:** JWT + node ownership validation on WS connect
+- **Install tokens:** Pre-authenticated registration, max uses = 2
+- **tryCmd:** No sudoers file, commands try without sudo first
+- **Redis:** localhost-only, no auth (internal use only)
 
 ## 4. Deployment
 
-**MVP (single server):**
-- Docker Compose: API + PostgreSQL + Redis + MinIO
-- Nginx reverse proxy + Let's Encrypt
-- Agent binary served from S3/MinIO
+**Domain:** `nodestral.web.id`
 
-**Scale:**
-- API: horizontal behind load balancer
-- DB: PostgreSQL primary + read replicas
-- Redis: cluster mode
-- WebSocket: sticky sessions or Redis pub/sub for multi-instance
-- Agent CDN: CloudFront/CF for binary distribution
+| Subdomain | Service | Port |
+|-----------|---------|------|
+| nodestral.web.id | Dashboard (Next.js) | 3000 |
+| api.nodestral.web.id | API (Go + Gin) | 8080 |
+| nx.nodestral.web.id | WebSocket Relay | 8090 |
+| management.nodestral.web.id | Admin Dashboard | 3001 |
 
-## 5. Tech Stack Summary
+**Stack:**
+- VPS: Tencent Cloud, Ubuntu 24.04 LTS
+- Services: systemd (nodestral-api, nodestral-web, nodestral-relay, nodestral-admin)
+- Database: Supabase (hosted PostgreSQL) + TimescaleDB (self-hosted)
+- Cache: Redis 7.0 (localhost, 64MB)
+- Email: Resend (offline/recovery alerts)
+- SSL: Let's Encrypt via certbot
+- No Docker: Bare metal deployment
+
+## 5. Tech Stack
 
 | Component | Technology | Why |
 |-----------|-----------|-----|
-| Agent | Go | Single binary, cross-compile, low resource, your strongest language |
-| API | Go (Gin/Fiber) | Same language as agent, fast, low memory |
-| Frontend | Next.js 14 + Tailwind | You know it, fast to ship, SSR for landing page |
-| Charts | Recharts | Lightweight, React-native, no D3 complexity |
-| Terminal | xterm.js | Standard, battle-tested |
-| Database | PostgreSQL + TimescaleDB | Time-series metrics + relational data in one DB |
-| Cache | Redis | Sessions, rate limiting, pub/sub for WebSocket scaling |
-| Storage | MinIO | Agent binaries, OTel Collector downloads, session recordings |
-| OTel | Official Collector | CNCF project, 50+ receivers, every backend supported |
-| Deploy | Docker Compose (MVP), K8s (later) | Start simple, scale later |
+| Agent | Go (static binary) | Cross-compile, low resource, single binary |
+| API | Go + Gin + sqlx | Fast, same language as agent |
+| Frontend | Next.js 15 + Tailwind | SSR for landing, App Router |
+| Charts | Recharts | Lightweight, React-native |
+| Terminal | xterm.js + WebSocket | Standard, battle-tested |
+| Database | Supabase PostgreSQL + TimescaleDB | Hosted auth + self-hosted time-series |
+| Cache | Redis 7.0 | Pub/sub for WS scaling, local cache |
+| Admin | Next.js (separate app) | Isolated deployment |
+| Relay | Go + Gorilla WebSocket | Metrics streaming + terminal proxy |
+| Email | Resend | Simple API, HTML templates |
+| Crypto | AES-GCM (Go crypto/aes) | Encrypt backend credentials at rest |
+
+## 6. Open Source Strategy
+
+**Public (MIT):** agent, backend, dashboard, archflow, hub repo
+**Private (SaaS moat):** api, web, relay, admin, agent-full, docs, node-mcp
+
+The moat is operational complexity — not any single feature. Forkers get everything except terminal, real-time metrics, backend export, and admin.

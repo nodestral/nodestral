@@ -1,20 +1,31 @@
 # Nodestral — Development Roadmap
 
-> Last updated: 2026-04-24
+> Last updated: 2026-05-06
 
 ## Phase 1: MVP ✅ Complete
 
 - [x] Go API server (Gin + Supabase PostgreSQL)
-- [x] JWT auth (register/login/refresh)
-- [x] Agent registration + install token
-- [x] Agent heartbeat (30s)
-- [x] System info collection
+- [x] JWT auth (register/login/refresh/change password)
+- [x] Agent registration + install token (pre-authenticated)
+- [x] Agent heartbeat (30s interval)
+- [x] System info collection (CPU, RAM, disk, network, OS)
 - [x] Cloud provider detection (Tencent, AWS, GCP, Azure, Hetzner, DigitalOcean)
-- [x] Next.js dashboard with node list
-- [x] Per-node metrics charts (CPU, RAM, disk, network)
+- [x] Next.js dashboard with node list, search/filter, status tabs
+- [x] Per-node detail page (specs, metrics charts, discovery, inline rename)
+- [x] Real-time metrics charts (CPU/RAM/Disk area, Network line, recharts)
+- [x] Time range selector (5m/15m/1h/6h/24h/7d)
 - [x] Dark/light theme
 - [x] Install script with CDN + GitHub Releases fallback
-- [x] Agent v0.1.0 release (4 binaries)
+- [x] Agent v0.1.0 release (linux/darwin × amd64/arm64, ~17MB)
+- [x] Node tagging + rename
+- [x] Bulk operations API + UI
+- [x] Notifications page (server persistence + client-side scanner)
+- [x] Web terminal (xterm.js, persistent shell via nx relay)
+- [x] Install token management UI
+- [x] Settings page (account info, change password)
+- [x] Sidebar notification unread badge
+- [x] Backends page with Pro gate
+- [x] Free/Pro/Team plan model (server-side enforcement)
 
 ## Phase 2: Discovery & Monitoring ✅ Complete
 
@@ -43,6 +54,9 @@
 - [x] Cost tracking — manual input per node, provider pricing estimates
 - [x] Token expiry auto-redirect with return URL
 - [x] Upgrade CTA with 3-column pricing cards
+- [x] Rate limiter middleware
+- [x] AES-GCM encryption for auth_config (backend credentials)
+- [x] Backend test connection + set default endpoints
 
 ## Phase 4: Admin & Management ✅ Complete
 
@@ -55,168 +69,78 @@
 - [x] Audit logs (filterable, admin action tracking)
 - [x] Audit logs DB table with auto-insert on admin actions
 
-## Phase 5: Growth (In Progress)
+## Phase 5: Growth 🔄 In Progress
 
-- [ ] OAuth (Google + GitHub) — blocked, needs provider credentials
-- [ ] Stripe billing integration — for pro/managed tiers
-- [ ] Agent auto-update mechanism
+### Ready to Build
+- [ ] **Announcements feature** — admin can push notifications to users (maintenance, new features)
+- [ ] **Agent auto-update** — version check on heartbeat, download prompt
+- [ ] **Update nodestral-docs** — sync docs with Phase 2+3+4 completion ← *you are here*
+
+### Blocked / External
+- [ ] OAuth (Google + GitHub) — needs provider credentials
+- [ ] Stripe billing integration — needs Stripe account
 - [ ] Staging VPS — user will handle
 - [ ] Domain purchase (nodestral.io) — user will handle
 - [ ] E2E agent install on external VPS — user will handle
-- [ ] Announcements feature (push notifications to users)
-- [ ] Update nodestral-docs to reflect Phase 2+3+4 completion
 
 ## Phase 6: Scale (Planned)
 
 - [ ] Multi-region deployment
 - [ ] Agent binary CDN with geo-routing
-- [ ] Rate limiting per user
-- [ ] API versioning
+- [ ] Rate limiting per user (tier-based)
+- [ ] API versioning (v2)
 - [ ] Mobile app (React Native)
 - [ ] SSO (SAML/OIDC) for Team plan
 - [ ] RBAC within teams
 - [ ] Managed LGTM stack per tenant (Prometheus + Loki + Tempo)
-
-# Nodestral — Development Roadmap
-
-## Phase 1: MVP (Weeks 1-4)
-
-### Week 1: Agent Core + API Skeleton
-- [ ] Go module setup (`cmd/agent`, `pkg/`)
-- [ ] System info collector (CPU, RAM, disk, OS, hostname, IPs)
-- [ ] Cloud provider auto-detection (Tencent, AWS, GCP, Azure, Hetzner, DO)
-- [ ] Agent registration flow (first-run → get node_id + token → save config)
-- [ ] Heartbeat loop (POST to API every 30s)
-- [ ] API server skeleton (Go, Gin/Fiber)
-- [ ] PostgreSQL schema (users, nodes, node_metrics)
-- [ ] Auth endpoints (register, login, JWT)
-- [ ] Agent heartbeat + register endpoints
-- [ ] Install script (`curl | sh`)
-
-### Week 2: Frontend Dashboard
-- [ ] Next.js project setup with Tailwind
-- [ ] Auth flow (login, register, JWT storage)
-- [ ] Node list page (cards with status dots)
-- [ ] Node detail page (specs table)
-- [ ] Real-time metrics charts (CPU, RAM, disk sparklines)
-- [ ] WebSocket connection for live updates
-- [ ] Landing page (hero, features, pricing)
-
-### Week 3: Web Terminal + OTel Integration
-- [ ] xterm.js integration
-- [ ] SSH proxy through API (WebSocket → agent → PTY)
-- [ ] Terminal session in node detail page
-- [ ] OTel Collector download + install logic in agent
-- [ ] OTel Collector config generator (API side)
-- [ ] Agent lifecycle management (start/stop/restart collector)
-- [ ] Backend config CRUD endpoints
-- [ ] Backend config UI (add Grafana Cloud / Prometheus / self-hosted)
-
-### Week 4: Polish + Deploy
-- [ ] Agent error handling + retry logic
-- [ ] Node offline detection (missed heartbeats → red status)
-- [ ] Docker Compose for full stack deployment
-- [ ] Nginx + SSL setup
-- [ ] Agent binary hosting (MinIO)
-- [ ] End-to-end testing (install agent → see in dashboard → terminal)
-- [ ] Documentation (install guide, quickstart)
-- [ ] Landing page copy + deploy to Vercel
-
-## Phase 2: Growth (Weeks 5-8)
-
-### Week 5-6: Operations & Security
-- [ ] Bulk operations engine (run command on N nodes)
-- [ ] Bulk ops UI (select nodes, enter command, see results)
-- [ ] Security scanner (OS updates, SSH config, open ports, cert expiry)
-- [ ] Security scan results in node detail
-- [ ] Node grouping and tagging
-- [ ] Search and filter nodes
-
-### Week 7-8: Cost + Backend Switching
-- [ ] Cloud billing API integration (Tencent, AWS, GCP)
-- [ ] Cost dashboard (per-node, per-provider, total)
-- [ ] One-click backend switch (apply new OTel config to all nodes)
-- [ ] Collector health monitoring per node
-- [ ] Email notifications (node offline, security alerts)
-
-## Phase 3: Revenue (Weeks 9-12)
-
-### Week 9-10: Managed Backend
-- [ ] Deploy managed Prometheus + Loki + Tempo (per-tenant)
-- [ ] OTel endpoint per tenant
-- [ ] "Connect Grafana" button (exposes Prometheus/Loki data sources)
-- [ ] LGTM compatibility endpoints
-- [ ] Metrics/log retention management
-
-### Week 11-12: Billing & Teams
-- [ ] Stripe integration (subscription management)
-- [ ] Plan enforcement (node limits, feature gates)
-- [ ] Team management (invite, RBAC)
-- [ ] SSO (Google, GitHub OAuth)
-- [ ] Audit log viewer
-
-## Phase 4: Scale (Ongoing)
-
-- [ ] API horizontal scaling
-- [ ] Rate limiting
-- [ ] Agent auto-update mechanism
-- [ ] Kubernetes deployment option
-- [ ] Windows support
-- [ ] Custom deploy templates
-- [ ] API documentation (OpenAPI/Swagger)
+- [ ] OpenAPI/Swagger documentation
 - [ ] Public API for integrations
+- [ ] Windows agent support
+- [ ] Kubernetes deployment option
 
 ## Milestones
 
-| Milestone | Target | What's Shippable |
-|-----------|--------|-----------------|
-| **M1: Working Prototype** | Week 2 | Agent registers, dashboard shows nodes with live metrics |
-| **M2: MVP** | Week 4 | Full flow: install → dashboard → terminal → OTel config |
-| **M3: Public Beta** | Week 8 | Ops, security, cost tracking, multi-backend |
-| **M4: Launch** | Week 12 | Billing, managed backend, teams, SSO |
+| Milestone | Status | What |
+|-----------|--------|------|
+| **M1: Prototype** | ✅ Done | Agent registers, dashboard shows nodes with live metrics |
+| **M2: MVP** | ✅ Done | Full flow: install → dashboard → terminal → discovery → ops → notifications |
+| **M3: Public Beta** | ✅ Done | Offline detection, email alerts, grouping, real-time WS, backend export, admin |
+| **M4: Growth** | 🔄 Next | Announcements, auto-update, OAuth, Stripe billing |
+| **M5: Scale** | 🔜 Future | Multi-region, mobile, SSO, managed LGTM, API v2 |
 
 ## Repository Structure
 
 ```
-nodestral/
-├── docs/
-│   ├── PRD.md
-│   ├── ARCHITECTURE.md
-│   └── ROADMAP.md          ← this file
-├── agent/                   # Go agent
-│   ├── cmd/agent/main.go
-│   ├── pkg/
-│   │   ├── collector/       # System info collection
-│   │   ├── provider/        # Cloud provider detection
-│   │   ├── heartbeat/       # Heartbeat loop
-│   │   ├── otel/            # OTel Collector management
-│   │   ├── terminal/        # SSH bridge / PTY proxy
-│   │   └── config/          # Agent config
-│   ├── go.mod
-│   └── scripts/
-│       └── install.sh       # curl | sh install script
-├── api/                     # Go API server
-│   ├── cmd/server/main.go
-│   ├── internal/
-│   │   ├── auth/            # JWT auth
-│   │   ├── handlers/        # HTTP handlers
-│   │   ├── models/          # DB models
-│   │   ├── otelconfig/      # OTel Collector config generator
-│   │   ├── terminal/        # WebSocket terminal proxy
-│   │   └── middleware/      # Auth, rate limit, CORS
-│   ├── migrations/          # SQL migrations
-│   └── go.mod
-├── web/                     # Next.js frontend
-│   ├── src/
-│   │   ├── app/             # App router pages
-│   │   ├── components/      # React components
-│   │   ├── lib/             # API client, auth, utils
-│   │   └── hooks/           # Custom hooks (useWebSocket, etc.)
-│   ├── package.json
-│   └── tailwind.config.ts
-├── deploy/                  # Docker Compose, Nginx, etc.
-│   ├── docker-compose.yml
-│   ├── nginx/nginx.conf
-│   └── scripts/
-└── README.md
+nodestral/                    # GitHub org
+├── nodestral/nodestral       # Hub repo (public, MIT) — README, deploy configs
+├── nodestral/agent           # Agent binary (public, MIT) — no terminal code
+├── nodestral/backend         # Community backend (public, MIT) — Go + SQLite
+├── nodestral/dashboard       # Community dashboard (public, MIT) — Next.js
+├── nodestral/api             # SaaS API (private) — Supabase + TimescaleDB
+├── nodestral/web             # SaaS dashboard (private) — full feature set
+├── nodestral/relay           # nx WebSocket relay (private)
+├── nodestral/admin           # Admin dashboard (private)
+├── nodestral/agent-full      # Full agent with terminal (private, moat)
+├── nodestral/nodestral-docs  # Documentation (private)
+├── nodestral/node-mcp        # MCP server for node management (private)
+└── nodestral/archflow        # Architecture diagram library (public)
 ```
+
+## Infrastructure
+
+- **VPS:** Tencent Cloud, Ubuntu 24.04 LTS
+- **Domain:** nodestral.web.id (planned: nodestral.io)
+- **Services:** systemd (api, relay, web, admin)
+- **Database:** Supabase PostgreSQL (users, nodes) + TimescaleDB (metrics, 30-day retention)
+- **Cache:** Redis 7.0 (localhost-only, 64MB, pub/sub)
+- **Email:** Resend (offline/recovery alerts)
+- **SSL:** Let's Encrypt via certbot
+
+### Subdomains
+
+| Subdomain | Service | Port |
+|-----------|---------|------|
+| nodestral.web.id | Dashboard | 3000 |
+| api.nodestral.web.id | API | 8080 |
+| nx.nodestral.web.id | WebSocket Relay | 8090 |
+| management.nodestral.web.id | Admin Dashboard | 3001 |

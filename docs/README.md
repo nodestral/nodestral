@@ -4,6 +4,16 @@ Internal documentation for [Nodestral](https://nodestral.web.id) — VPS fleet m
 
 > **⚠️ This repo is private.** Contains moat features, architecture decisions, and design docs not exposed in the public repos.
 
+## Status
+
+**Phase 4 complete. Phase 5 (Growth) in progress.**
+
+- ✅ MVP: Agent + API + Dashboard + Terminal + Discovery
+- ✅ Discovery & Monitoring: Offline detection, email alerts, real-time WS, grouping
+- ✅ Platform: TimescaleDB, backend export, cost tracking, CI/CD
+- ✅ Admin: Dashboard, user management, billing, audit logs
+- 🔄 Growth: Announcements, auto-update, OAuth, Stripe (next)
+
 ## Contents
 
 | Document | Description |
@@ -24,6 +34,7 @@ Internal documentation for [Nodestral](https://nodestral.web.id) — VPS fleet m
 | [nodestral/agent](https://github.com/nodestral/agent) | Go agent — public, no terminal code |
 | [nodestral/backend](https://github.com/nodestral/backend) | Community backend — SQLite, self-hostable |
 | [nodestral/dashboard](https://github.com/nodestral/dashboard) | Community dashboard — Next.js |
+| [nodestral/archflow](https://github.com/nodestral/archflow) | Architecture diagram library |
 
 ### Private (SaaS Platform)
 

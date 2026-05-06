@@ -1,5 +1,7 @@
 # Nodestral — Product Requirements Document
 
+> Last updated: 2026-05-06
+
 ## 1. Vision
 
 **Nodestral is a VPS fleet management control plane.** One agent, one dashboard, any monitoring backend. Install a lightweight agent on any server, see all your nodes in one place, manage them from your browser, and ship observability data to whatever backend you already use — Grafana, Datadog, Prometheus, or our built-in dashboard.
@@ -20,83 +22,120 @@ Developers and small teams with multiple VPS instances across different cloud pr
 
 | Segment | Servers | Pain Point | Willingness to Pay |
 |---------|---------|------------|-------------------|
-| Hobbyist | 1-5 | Want simple dashboard, no Grafana setup | Free |
-| Indie Dev | 5-20 | Need web terminal, bulk ops, cost tracking | $5/node/mo |
-| Small Team | 20-100 | Need RBAC, audit logs, managed backend | $15/node/mo |
+| Hobbyist | 1-5 | Want simple dashboard, no Grafana setup | Free (2 nodes) |
+| Indie Dev | 5-20 | Need web terminal, bulk ops, cost tracking | Rp10K/node/mo |
+| Small Team | 20-100 | Need RBAC, audit logs, managed backend | Custom |
 | Enterprise | 100+ | Need SSO, compliance, dedicated support | Custom |
 
 ## 4. Product Layers
 
-### Layer 1: Agent & Registration (MVP)
-- Single Go binary (~5MB), zero dependencies
-- One-command install: `curl -sSL nodestral.io/install | sh`
-- Auto-detect: OS, CPU, RAM, disk, IP, hostname, cloud provider
-- Auto-register to Nodestral dashboard
+### Layer 1: Agent & Registration ✅
+- Single Go binary (~17MB), zero dependencies, static build
+- One-command install: `curl | sh` with CDN + GitHub Releases fallback
+- Auto-detect: OS, CPU, RAM, disk, IP, hostname, cloud provider, instance type
+- Auto-register to Nodestral dashboard (or via install token)
 - Heartbeat every 30s via HTTPS
-- Manage OTel Collector lifecycle (install, configure, update, restart)
+- Prometheus remote write exporter (Pro only)
 
-### Layer 2: Dashboard & Inventory (MVP)
-- Server list with live status (green/yellow/red)
-- Per-server detail: specs, uptime, OS, provider, IP
+### Layer 2: Dashboard & Inventory ✅
+- Server list with live status (green/yellow/red), search/filter, status tabs
+- Per-server detail: specs, metrics charts, discovery, inline rename
 - **Node auto-discovery**: installed services, packages, Docker containers, listening ports, firewall rules, SSL cert expiry, pending OS updates, SSH users, existing monitoring tools
-- Built-in lightweight charts (CPU, RAM, disk) — works without Grafana
-- Server grouping and tagging (prod, staging, by-provider)
-- Quick actions: reboot, run command, check updates
+- Built-in real-time metrics charts (CPU, RAM, disk, network) via WebSocket
+- Server grouping and tagging (CRUD)
+- Cost tracking (manual input + provider pricing estimates)
+- Notifications (offline/recovery alerts via email)
 
-### Layer 3: Web Terminal (MVP)
+### Layer 3: Web Terminal ✅
 - Browser-based SSH terminal (xterm.js)
-- SSH proxy through backend — no direct SSH exposure
-- Audit log of all terminal sessions
+- Persistent shell via WebSocket relay (nx)
+- Connection limits (5/node, 20/user)
+- Node ownership validation on WS connect
+- **Note:** Terminal code is stripped from public agent repo (moat strategy)
 
-### Layer 4: Backend Management (Post-MVP)
-- Configure OTel Collector export destination per-node or globally
-- One-click switch: Datadog → Grafana Cloud → Prometheus → any OTel backend
-- Built-in support: Grafana Cloud, self-hosted Prometheus+Loki+Tempo, Datadog, Honeycomb
-- Collector health monitoring per node
+### Layer 4: Backend Management ✅
+- Configure Prometheus remote write destination per-node or globally
+- One-click switch: Grafana Cloud → Prometheus → Loki → Datadog → OTLP
+- Backend test connection + set default
+- Export guide tab with setup instructions
+- Custom Grafana dashboard JSON
+- **Pro feature** — gated behind subscription
 
-### Layer 5: Operations (Post-MVP)
+### Layer 5: Operations ✅
 - Bulk operations: run command across all/some nodes
-- Deploy templates: docker-compose stacks, scripts
-- Security posture: OS updates, SSH config audit, cert expiry, open ports
-- Cost tracking: pull billing APIs from cloud providers, show per-node cost
+- Operations history with per-node results
+- Install token management (pre-authenticated registration)
 
-### Layer 6: Managed Backend (Revenue)
-- Nodestral hosts Prometheus + Loki + Tempo for users who don't want self-hosted
-- OTel Collector ships to our backend
-- Users can still connect their own Grafana to our backend (LGTM compatibility)
+### Layer 6: Admin & Management ✅
+- Admin dashboard (separate subdomain, separate JWT)
+- User management (view-only, search, pagination)
+- Node overview (total, online/offline, per-provider)
+- System health (API, Supabase, TimescaleDB, Redis, Relay — 30s refresh)
+- Billing (MRR in Rp + USD, plan distribution, subscription table)
+- Audit logs (filterable, admin action tracking)
 
-## 5. Non-Goals (MVP)
+### Layer 7: Growth 🔄 (In Progress)
+- [ ] Announcements feature (push notifications to users)
+- [ ] Agent auto-update mechanism
+- [ ] OAuth (Google + GitHub)
+- [ ] Stripe billing integration
+
+### Layer 8: Scale (Planned)
+- [ ] Multi-region deployment
+- [ ] Mobile app (React Native)
+- [ ] SSO (SAML/OIDC) for Team plan
+- [ ] RBAC within teams
+- [ ] Managed LGTM stack per tenant
+- [ ] OpenAPI/Swagger documentation
+- [ ] Public API for integrations
+
+## 5. Non-Goals
 
 - ❌ Building our own metrics engine (use OTel + Prometheus)
 - ❌ Building our own log storage (use OTel + Loki)
 - ❌ Building our own tracing (use OTel + Tempo)
+- ❌ Windows support (Linux/macOS only)
 - ❌ Kubernetes-native features (future consideration)
-- ❌ Windows support (Linux-only for MVP)
-- ❌ Mobile app (responsive web first)
 
 ## 6. Success Metrics
 
-| Metric | Target (6 months) |
-|--------|-------------------|
-| Registered nodes | 1,000+ |
-| Active users | 200+ |
-| Free → Pro conversion | 5%+ |
-| Agent install success rate | 99%+ |
-| Dashboard load time | <2s |
-| Web terminal latency | <200ms added |
+| Metric | Target (6 months) | Status |
+|--------|-------------------|--------|
+| Registered nodes | 1,000+ | 🔄 |
+| Active users | 200+ | 🔄 |
+| Free → Pro conversion | 5%+ | 🔄 |
+| Agent install success rate | 99%+ | 🔄 |
+| Dashboard load time | <2s | ✅ |
+| Web terminal latency | <200ms added | ✅ |
 
 ## 7. Revenue Model
 
 | Tier | Price | Included |
 |------|-------|----------|
-| Free | $0 | Up to 5 nodes, built-in charts, basic inventory |
-| Pro | $5/node/mo | Unlimited nodes, web terminal, bulk ops, cost tracking, backend management |
-| Team | $15/node/mo | Everything in Pro + managed LGTM backend, SSO, RBAC, audit logs |
+| Free | $0 | Up to 2 nodes, built-in charts, basic inventory, terminal |
+| Pro | Rp10K/node/mo (~$0.60) | Unlimited nodes, backend export, node_exporter install |
+| Team | Custom | Everything in Pro + managed LGTM backend, SSO, RBAC, audit logs |
 
-## 8. Branding
+**Note:** Pricing in IDR (Indonesian Rupiah) for local market. USD equivalent shown for reference.
 
-- **Name**: Nodestral
-- **Tagline**: "Your server fleet. One dashboard. Any monitoring backend."
-- **Domain**: nodestral.io (to acquire), nodestral.io (fallback)
-- **Logo**: TBD
-- **Colors**: Dark theme primary, accent blue/green
+## 8. Open Source Strategy
+
+**Public (MIT):**
+- `nodestral/agent` — Agent binary (no terminal code)
+- `nodestral/backend` — Community backend (Go + SQLite)
+- `nodestral/dashboard` — Community dashboard (Next.js)
+- `nodestral/archflow` — Architecture diagram library
+
+**Private (SaaS moat):**
+- `nodestral/api` — SaaS API (Supabase + TimescaleDB)
+- `nodestral/web` — SaaS dashboard (full features)
+- `nodestral/relay` — WebSocket relay
+- `nodestral/admin` — Admin dashboard
+- `nodestral/agent-full` — Full agent with terminal
+
+## 9. Branding
+
+- **Name:** Nodestral
+- **Tagline:** "Your server fleet. One dashboard. Any monitoring backend."
+- **Domain:** nodestral.web.id (planned: nodestral.io)
+- **Colors:** Dark theme primary, accent blue/green
